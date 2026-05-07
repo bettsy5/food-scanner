@@ -1,6 +1,7 @@
 """
 Model prediction pipeline.
 Loads trained TF-IDF + classifier models and generates predictions.
+Auto-trains from Open Food Facts API if model files are not found.
 """
 import os
 import joblib
@@ -21,7 +22,7 @@ class FoodPredictor:
         self._loaded = False
 
     def load(self) -> bool:
-        """Load trained models from disk."""
+        """Load trained models from disk. Auto-trains if not found."""
         try:
             self.scaler = joblib.load(os.path.join(MODEL_DIR, "scaler.joblib"))
             self.tfidf = joblib.load(os.path.join(MODEL_DIR, "tfidf.joblib"))
@@ -29,9 +30,15 @@ class FoodPredictor:
             self.nova_model = joblib.load(os.path.join(MODEL_DIR, "nova_model.joblib"))
             self._loaded = True
             return True
-        except FileNotFoundError as e:
-            print(f"Model files not found: {e}")
-            print("Run train_models.py first to generate model files.")
+        except FileNotFoundError:
+            print("Model files not found. Attempting auto-train...")
+            try:
+                from src.auto_train import auto_train
+                success = auto_train()
+                if success:
+                    return self.load()  # Retry loading after training
+            except Exception as e:
+                print(f"Auto-train failed: {e}")
             return False
 
     @property
