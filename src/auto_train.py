@@ -3,6 +3,7 @@ Auto-train models by fetching sample data from Open Food Facts API.
 Used when pre-trained model files are not available (e.g., first deploy on Streamlit Cloud).
 """
 import os
+import sys
 import time
 import requests
 import numpy as np
@@ -28,22 +29,35 @@ TEXT_FIELDS = ["ingredients_text", "product_name", "labels", "categories"]
 
 FIELDS_PARAM = (
     "product_name,brands,ingredients_text,nutriscore_grade,nova_group,"
-    "categories,labels,energy-kcal_100g,fat_100g,saturated-fat_100g,"
-    "trans-fat_100g,carbohydrates_100g,sugars_100g,fiber_100g,"
-    "proteins_100g,salt_100g,sodium_100g,additives_n,nutriscore_score,"
-    "serving_quantity,vitamin-a_100g,vitamin-c_100g,calcium_100g,"
-    "iron_100g,cholesterol_100g"
+    "categories,labels,allergens,"
+    "energy-kcal_100g,fat_100g,saturated-fat_100g,trans-fat_100g,"
+    "carbohydrates_100g,sugars_100g,fiber_100g,proteins_100g,"
+    "salt_100g,sodium_100g,additives_n,nutriscore_score,"
+    "serving_quantity,vitamin-a_100g,vitamin-c_100g,"
+    "calcium_100g,iron_100g,cholesterol_100g"
 )
 
 
-def fetch_training_data(target_count=5000, max_pages=60):
+def combine_text(row):
+    parts = []
+    for f in TEXT_FIELDS:
+        val = row.get(f, "")
+        if val and str(val).strip().lower() not in ("nan", "none", ""):
+            parts.append(str(val).strip())
+    return " ".join(parts)
+
+
+def fetch_training_data(target_count=1000, max_pages=30):
     """Fetch products from Open Food Facts API with valid Nutri-Score and NOVA."""
     products = []
     page = 1
     headers = {"User-Agent": USER_AGENT}
 
+    print(f"Starting data fetch (target: {target_count} products)...", flush=True)
+
     while len(products) < target_count and page <= max_pages:
         url = "https://world.openfoodfacts.org/cgi/search.pl"
+        grade = ["a", "b", "c", "d", "e"][(page - 1) % 5]
         params = {
             "action": "process",
             "json": 1,
@@ -52,11 +66,8 @@ def fetch_training_data(target_count=5000, max_pages=60):
             "fields": FIELDS_PARAM,
             "tagtype_0": "nutrition_grades",
             "tag_contains_0": "contains",
-            "tag_0": "a",
+            "tag_0": grade,
         }
-        # Cycle through nutri-score grades to get balanced data
-        grade = ["a", "b", "c", "d", "e"][(page - 1) % 5]
-        params["tag_0"] = grade
 
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=15)
@@ -70,36 +81,30 @@ def fetch_training_data(target_count=5000, max_pages=60):
                 if ns in ["a", "b", "c", "d", "e"] and nova in [1, 2, 3, 4] and ing and len(str(ing)) > 10:
                     products.append(p)
         except Exception as e:
-            print(f"  Fetch error page {page}: {e}")
+            print(f"  Fetch error page {page}: {e}", flush=True)
 
         page += 1
-        time.sleep(0.3)
+        time.sleep(0.2)
 
-        if page % 10 == 0:
-            print(f"  Fetched {len(products)} valid products so far...")
+        if page % 5 == 0:
+            print(f"  Fetched {len(products)} valid products so far...", flush=True)
 
-    print(f"  Total fetched: {len(products)} products")
+    print(f"Finished fetching: {len(products)} products total", flush=True)
     return products
-
-
-def combine_text(product):
-    parts = []
-    for field in TEXT_FIELDS:
-        val = str(product.get(field, "")).strip()
-        if val and val.lower() not in ("nan", "none", ""):
-            parts.append(val)
-    return " ".join(parts)
 
 
 def auto_train():
     """Fetch data and train models automatically."""
+    print("=" * 50, flush=True)
+    print("AUTO-TRAIN: Starting model training...", flush=True)
+    print("=" * 50, flush=True)
+
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    print("Fetching training data from Open Food Facts API...")
-    products = fetch_training_data(target_count=5000)
+    products = fetch_training_data(target_count=1000)
 
-    if len(products) < 100:
-        print("Not enough data fetched. Cannot train models.")
+    if len(products) < 50:
+        print(f"Not enough data fetched ({len(products)}). Cannot train models.", flush=True)
         return False
 
     # Build DataFrame
@@ -114,9 +119,9 @@ def auto_train():
         else:
             df[col] = 0.0
 
-    print(f"Training on {len(df)} products...")
-    print(f"  Nutri-Score distribution: {df['nutriscore_grade'].value_counts().to_dict()}")
-    print(f"  NOVA distribution: {df['nova_group'].value_counts().to_dict()}")
+    print(f"Training on {len(df)} products...", flush=True)
+    print(f"  Nutri-Score distribution: {df['nutriscore_grade'].value_counts().to_dict()}", flush=True)
+    print(f"  NOVA distribution: {df['nova_group'].value_counts().to_dict()}", flush=True)
 
     # Scale numeric
     scaler = StandardScaler()
@@ -129,33 +134,34 @@ def auto_train():
     )
     X_text = tfidf.fit_transform(df["combined_text"])
 
-    # Combine
+    # Combine features
     X = sp.hstack([X_text, sp.csr_matrix(X_num)])
 
-    # Train Nutri-Score
-    print("Training Nutri-Score model...")
+    # Train Nutri-Score model
+    print("Training Nutri-Score classifier...", flush=True)
     ns_model = LogisticRegression(
         max_iter=1000, class_weight="balanced",
-        multi_class="multinomial", solver="lbfgs", random_state=42, C=1.0
+        solver="saga", C=1.0, random_state=42
     )
     ns_model.fit(X, df["nutriscore_grade"])
+    print(f"  Nutri-Score training accuracy: {ns_model.score(X, df['nutriscore_grade']):.3f}", flush=True)
 
-    # Train NOVA
-    print("Training NOVA Group model...")
+    # Train NOVA model
+    print("Training NOVA classifier...", flush=True)
     nova_model = LogisticRegression(
         max_iter=1000, class_weight="balanced",
-        multi_class="multinomial", solver="lbfgs", random_state=42, C=1.0
+        solver="saga", C=1.0, random_state=42
     )
     nova_model.fit(X, df["nova_group"])
+    print(f"  NOVA training accuracy: {nova_model.score(X, df['nova_group']):.3f}", flush=True)
 
-    # Save
+    # Save models
     joblib.dump(scaler, os.path.join(MODEL_DIR, "scaler.joblib"))
     joblib.dump(tfidf, os.path.join(MODEL_DIR, "tfidf.joblib"))
     joblib.dump(ns_model, os.path.join(MODEL_DIR, "ns_model.joblib"))
     joblib.dump(nova_model, os.path.join(MODEL_DIR, "nova_model.joblib"))
-    print(f"Models saved to {MODEL_DIR}/")
+
+    print("=" * 50, flush=True)
+    print("AUTO-TRAIN: Models saved successfully!", flush=True)
+    print("=" * 50, flush=True)
     return True
-
-
-if __name__ == "__main__":
-    auto_train()
