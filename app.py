@@ -26,7 +26,11 @@ def load_predictor():
     success = pred.load()
     return pred, success
 
+# Show training status if models need to be built
+model_status = st.empty()
+model_status.info("Loading models...")
 predictor, models_loaded = load_predictor()
+model_status.empty()
 
 # ── Styling ──────────────────────────────────────────────────
 NUTRISCORE_COLORS = {
@@ -66,7 +70,6 @@ def nutriscore_badge(grade: str, confidence: float, probabilities: dict):
         """, unsafe_allow_html=True)
 
     with col2:
-        # Probability bar chart
         grades = sorted(probabilities.keys())
         probs = [probabilities[g] for g in grades]
         colors = [NUTRISCORE_COLORS.get(g, "#ccc") for g in grades]
@@ -144,11 +147,13 @@ st.markdown("Predict **Nutri-Score** and **NOVA Group** for any food product usi
 
 if not models_loaded:
     st.error(
-        "**Models not found.** Please train the models first by running:\n\n"
+        "**Models could not be loaded or trained.**\n\n"
+        "The app attempted to auto-train models from the Open Food Facts API "
+        "but was unable to complete. Please try refreshing the page, or "
+        "train models manually:\n\n"
         "```bash\n"
         "python train_models.py --off-path path/to/en.openfoodfacts.org.products.csv\n"
-        "```\n\n"
-        "See the README for details."
+        "```"
     )
     st.stop()
 
@@ -272,15 +277,12 @@ if selected_product and (query or barcode):
     prod_brand = selected_product.get("brands", "")
     st.subheader(f"{prod_name}" + (f" — {prod_brand}" if prod_brand else ""))
 
-    # Product image
     img_url = selected_product.get("image_front_small_url") or selected_product.get("image_url")
-
     if img_url:
         col_img, col_space = st.columns([1, 3])
         with col_img:
             st.image(img_url, width=150)
 
-    # Predictions
     r1, r2 = st.columns(2)
     with r1:
         st.markdown("### Nutri-Score Prediction")
@@ -289,7 +291,6 @@ if selected_product and (query or barcode):
             result["nutriscore"]["confidence"],
             result["nutriscore"]["probabilities"]
         )
-        # Compare to official if available
         official_ns = selected_product.get("nutriscore_grade")
         if official_ns and official_ns.upper() in NUTRISCORE_COLORS:
             match = "matches" if official_ns.upper() == result["nutriscore"]["grade"] else "differs from"
@@ -311,7 +312,6 @@ if selected_product and (query or barcode):
             except (ValueError, TypeError):
                 pass
 
-    # Details
     with st.expander("View Nutrition Facts"):
         display_nutrition_table(selected_product)
 
